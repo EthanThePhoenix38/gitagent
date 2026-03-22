@@ -190,7 +190,15 @@ function collectExtraDirs(agentDir: string): string[] {
 
 /**
  * Map hooks/hooks.yaml to Claude Code settings format.
- * Claude Code hooks: { hooks: { "<event>": [{ command, ...}] } }
+ *
+ * Claude Code expects:
+ * {
+ *   hooks: {
+ *     "<event>": [
+ *       { matcher: "<pattern>", hooks: [{ type: "command", command: "..." }] }
+ *     ]
+ *   }
+ * }
  */
 function buildHooksSettings(agentDir: string): string | null {
   const hooksPath = join(agentDir, 'hooks', 'hooks.yaml');
@@ -210,16 +218,16 @@ function buildHooksSettings(agentDir: string): string | null {
 
     // Map gitagent hook events to Claude Code hook events
     const eventMap: Record<string, string> = {
-      'on_session_start': 'PreToolUse',
+      'on_session_start': 'SessionStart',
       'pre_tool_use': 'PreToolUse',
       'post_tool_use': 'PostToolUse',
-      'pre_response': 'PostToolUse',
-      'post_response': 'PostToolUse',
-      'on_error': 'PostToolUse',
-      'on_session_end': 'PostToolUse',
+      'pre_response': 'UserPromptSubmit',
+      'post_response': 'Stop',
+      'on_error': 'PostToolUseFailure',
+      'on_session_end': 'SessionEnd',
     };
 
-    const ccHooks: Record<string, Array<{ type: string; command: string }>> = {};
+    const ccHooks: Record<string, Array<{ matcher: string; hooks: Array<{ type: string; command: string }> }>> = {};
 
     for (const [event, hooks] of Object.entries(hooksConfig.hooks)) {
       const ccEvent = eventMap[event];
@@ -229,14 +237,22 @@ function buildHooksSettings(agentDir: string): string | null {
         ccHooks[ccEvent] = [];
       }
 
+      const hookCommands: Array<{ type: string; command: string }> = [];
       for (const hook of hooks) {
         const scriptPath = join(agentDir, 'hooks', hook.script);
         if (existsSync(scriptPath)) {
-          ccHooks[ccEvent].push({
+          hookCommands.push({
             type: 'command',
             command: `bash ${scriptPath}`,
           });
         }
+      }
+
+      if (hookCommands.length > 0) {
+        ccHooks[ccEvent].push({
+          matcher: '',
+          hooks: hookCommands,
+        });
       }
     }
 
@@ -244,9 +260,10 @@ function buildHooksSettings(agentDir: string): string | null {
 
     const settings = { hooks: ccHooks };
     const tmpFile = join(tmpdir(), `gitagent-hooks-${randomBytes(4).toString('hex')}.json`);
-    writeFileSync(tmpFile, JSON.stringify(settings), 'utf-8');
+    writeFileSync(tmpFile, JSON.stringify(settings, null, 2), 'utf-8');
 
-    warn(`Mapped ${Object.values(ccHooks).flat().length} hooks to Claude Code settings`);
+    const totalHooks = Object.values(ccHooks).reduce((sum, entries) => sum + entries.reduce((s, e) => s + e.hooks.length, 0), 0);
+    warn(`Mapped ${totalHooks} hooks to Claude Code settings`);
     return tmpFile;
   } catch {
     return null;
